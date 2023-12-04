@@ -1,2 +1,5 @@
 *.pyc
 env.py
+*.sh
+log/
+init/

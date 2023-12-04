@@ -125,4 +125,4 @@ class JobBot(APIView):
 			'j2': '%d 은(는) Eqw 상태 입니다. 알림 설정을 할 수 없습니다.' % self.job_id,
 		}
 		self.PrintMsg('%s\n' % err_dict[err_type])
-		print('Error')
+		print('Error\n')
