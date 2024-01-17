@@ -49,7 +49,9 @@ class JobBot(APIView):
 			qstat_arr = []
 			for qs in qstat_str.split('\n')[:-1]:
 				qs_s = qs.split()
-				if len(qs_s) < 8: qs_s.insert(-1, 'NaN')
+				if   len(qs_s) == 8: pass
+				elif len(qs_s) == 7: qs_s.insert(-1, 'queue_waiting')
+				else: return 0, 'j2'
 				qstat_arr.append(qs_s)
 
 			qstat = pd.DataFrame(
@@ -61,7 +63,6 @@ class JobBot(APIView):
 			qstat['elapsed_time'] = (timezone.now() - qstat['submit_time']).dt.total_seconds() / 60
 
 			if self.job_id not in qstat['job_id'].to_list(): return 0, 'j1'
-			elif qstat.loc[qstat['job_id'] == self.job_id, 'state'].iloc[0] == 'Eqw': return 0, 'j2'
 			else: return qstat, ''
 
 	def GetQInfo(self, qstat):
@@ -70,16 +71,16 @@ class JobBot(APIView):
 	def RunJobBot(self):
 		t0 = timer()
 
+		print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Start')
 		while True:
 			qstat_tot, err = self.GetQ()
 			if len(err) < 1:
 				qstat = qstat_tot[qstat_tot['job_id'] == self.job_id].iloc[0, :]
-				print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Running', '%fs' % (timer()-t0))
 				time.sleep(env.time_itv)
 			else:
 				if err == 'j1':
 					t1 = timer()
-					self.PrintMsg('%d\t%s\t(약 %d분 소요)\n위 잡이 완료되었습니다.' % (self.job_id, *self.GetQInfo(qstat)))
+					self.PrintMsg(':white_check_mark:\t%d\t%s\t(약 %d분 소요)\n잡이 완료되었습니다.' % (self.job_id, *self.GetQInfo(qstat)))
 					print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Done', '%fs' % (timer()-t0), end='\n\n')
 					break
 				else:
@@ -96,6 +97,8 @@ class JobBot(APIView):
 
 		if len(args_list) < 1:
 			self.Error('a0')
+		elif args_list[0].isdecimal() != True:
+			self.Error('a0')
 		else: 
 			self.job_id = int(args_list[0])
 
@@ -105,14 +108,16 @@ class JobBot(APIView):
 				else:
 					threading.Thread(target=self.RunJobBot, args=[]).start()
 					qstat = qstat_tot[qstat_tot['job_id'] == self.job_id].iloc[0, :]
-					self.PrintMsg('%d\t%s\t(현재 %d분 경과)\n위 잡에 대한 알림 설정이 완료되었습니다.' % (self.job_id, *self.GetQInfo(qstat)))
+					self.PrintMsg(':bell:\t%d\t%s\t(현재 %d분 경과)\n알림이 설정되었습니다.' % (self.job_id, *self.GetQInfo(qstat)))
 					self.PrintWatcher(qstat)
 			elif re.match('/jobbot/exit/', request.path_info):
-				res = 2
-				if res > 1: self.PrintMsg('알림 설정이 취소되지 않았습니다.\n')
+				"""
+				res = 1
+				if res > 0: self.PrintMsg('알림 설정이 취소되지 않았습니다.\n')
 				else: self.PrintMsg('알림 설정이 정상적으로 취소되었습니다.\n')
+				"""
 			else:
-				print('%s is wrong path.' % request.path_info)
+				print('%s is wrong path' % request.path_info)
 				sys.exit(1)
 
 		return Response(status=200)
@@ -122,7 +127,7 @@ class JobBot(APIView):
 			'a0': '잡 ID를 입력하세요. 사용법: /jb [job_id]',
 			'j0': '현재 제출된 잡이 없습니다.',
 			'j1': '%d 은(는) 존재하지 않는 잡 ID 입니다.' % self.job_id,
-			'j2': '%d 은(는) Eqw 상태 입니다. 알림 설정을 할 수 없습니다.' % self.job_id,
+			'j2': '잡 목록 구성 중 오류가 발생하였습니다.',
 		}
 		self.PrintMsg('%s\n' % err_dict[err_type])
-		print('Error\n')
+		print('Error %s\n' % err_type)
