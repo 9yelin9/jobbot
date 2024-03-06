@@ -19,5 +19,4 @@ from jobbot.views import JobBot
 
 urlpatterns = [
     path('run/', JobBot.as_view(), name='jobbot'),
-    path('exit/', JobBot.as_view(), name='jobbot_exit'),
 ]

@@ -10,124 +10,110 @@ import io
 import os
 import re
 import sys
+import json
 import time
 import ctypes
 import signal
 import datetime
 import threading
+import xmltodict
 import numpy as np
 import pandas as pd
 from slack_sdk import WebClient
 from timeit import default_timer as timer
 
 class JobBot(APIView):
-	def __init__(self):
-		self.token = env.token
-		self.ch_name = env.ch_name
-		self.client = WebClient(self.token)
+    def __init__(self):
+        self.token = env.token
+        self.ch_name = env.ch_name
+        self.client = WebClient(self.token)
 
-		self.job_id = -1
+        self.job_id = -1
 
-	def PrintMsg(self, text):
-		self.client.chat_postMessage(
-			channel=self.ch_name,
-			text='<@%s> ' % self.user_name_ + text 
-		)
+    def PrintMsg(self, text):
+        self.client.chat_postMessage(
+                channel=self.ch_name,
+                text='<@%s> ' % self.user_name_ + text 
+                )
 
-	def PrintWatcher(self, qstat):
-		if qstat['user'] in list(env.user_dict) and self.user_name_ != env.user_dict[qstat['user']]:
-			self.client.chat_postMessage(
-				channel=self.ch_name,
-				text='<@%s> 님이 <@%s> 님의 잡이 언제 끝날지 궁금해합니다...\n' % (self.user_name_, env.user_dict[qstat['user']])
-			)
+    def PrintWatcher(self, job):
+        if job['JB_owner'] in list(env.user_dict) and self.user_name_ != env.user_dict[job['JB_owner']]:
+            self.client.chat_postMessage(
+                    channel=self.ch_name,
+                    text=':meow_party:\t<@%s> 님이 <@%s> 님의 잡이 언제 끝날지 궁금해합니다...\n' % (self.user_name_, env.user_dict[job['JB_owner']])
+                    )
 
-	def GetQ(self):
-		qstat_str = os.popen('%s \"qstat -u \'*\' -xml | tr \'\\n\' \' \' | sed \'s#<job_list[^>]*>#\\n#g\' | sed \'s#<[^>]*>##g\' | grep \' \' | column -t\"' % env.server).read()
+    def GetJob(self):
+        qstat_xml = os.popen('%s \"qstat -u \'*\' -xml\"' % env.server).read()
+        qstat_dict = json.loads(json.dumps(xmltodict.parse(qstat_xml)))['job_info']
 
-		if len(qstat_str) < 1: return 0, 'j0'
-		else:
-			qstat_arr = []
-			for qs in qstat_str.split('\n')[:-1]:
-				qs_s = qs.split()
-				if   len(qs_s) == 8: pass
-				elif len(qs_s) == 7: qs_s.insert(-1, 'queue_waiting')
-				else: return 0, 'j2'
-				qstat_arr.append(qs_s)
+        job_list = []
+        for info in [qstat_dict['queue_info'], qstat_dict['job_info']]:
+            if info != None:
+                for job in np.ravel(info['job_list']): job_list.append(job)
 
-			qstat = pd.DataFrame(
-					qstat_arr,
-					columns=['job_id', 'prior', 'name', 'user', 'state', 'submit_time', 'queue', 'slots'],
-					)
-			qstat['job_id'] = qstat['job_id'].astype('i')
-			qstat['submit_time'] = pd.to_datetime(qstat['submit_time'])
-			qstat['elapsed_time'] = (timezone.now() - qstat['submit_time']).dt.total_seconds() / 60
+        for i, job in enumerate(job_list):
+            if int(job['JB_job_number']) == self.job_id:
+                if job['@state'] == 'running':
+                    job['elapsed_time'] = (datetime.datetime.now() - datetime.datetime.strptime(job['JAT_start_time'], '%Y-%m-%dT%H:%M:%S')).total_seconds() / 60 
+                    return job, ''
+                else:
+                    job['elapsed_time'] = 0
+                    return job, 'j1'
 
-			if self.job_id not in qstat['job_id'].to_list(): return 0, 'j1'
-			else: return qstat, ''
+        return {}, 'j0'
 
-	def GetQInfo(self, qstat):
-		return '\t'.join([qstat['name'], qstat['user'], qstat['queue'], qstat['slots']]), qstat['elapsed_time']
+    def GetJobInfo(self, job):
+        return '\t'.join([str(job[v]) for v in ['JB_name', 'JB_owner', 'queue_name', 'slots']]), job['elapsed_time']
 
-	def RunJobBot(self):
-		t0 = timer()
+    def RunJobBot(self):
+        print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Start')
 
-		print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Start')
-		while True:
-			qstat_tot, err = self.GetQ()
-			if len(err) < 1:
-				qstat = qstat_tot[qstat_tot['job_id'] == self.job_id].iloc[0, :]
-				time.sleep(env.time_itv)
-			else:
-				if err == 'j1':
-					t1 = timer()
-					self.PrintMsg(':white_check_mark:\t%d\t%s\t(약 %d분 소요)\n잡이 완료되었습니다.' % (self.job_id, *self.GetQInfo(qstat)))
-					print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Done', '%fs' % (timer()-t0), end='\n\n')
-					break
-				else:
-					self.Error(err)
-					break
+        job, err = self.GetJob()
+        if len(job):
+            self.PrintMsg(':bell:\t%d\t%s\t(현재 %d분 경과)\n알림이 설정되었습니다.' % (self.job_id, *self.GetJobInfo(job)))
+            if len(err): self.Error(err)
+            self.PrintWatcher(job)
 
-	def post(self, request):
-		print(datetime.datetime.now(), request.body.decode('utf-8').split('&'))
+            t0 = timer()
+            while True:
+                job_new, err = self.GetJob()
+                if len(job_new):
+                    job = job_new
+                    time.sleep(env.time_itv)
+                else:
+                    self.PrintMsg(':white_check_mark:\t%d\t%s\t(약 %d분 소요)\n잡이 완료되었습니다.' % (self.job_id, *self.GetJobInfo(job)))
+                    print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Done', '%fs' % (timer()-t0), end='\n\n')
+                    break
+        else: self.Error(err)
 
-		self.user_name_  = request.data['user_name']
-		self.trigger_id_ = request.data['trigger_id']
+    def post(self, request):
+        print(datetime.datetime.now(), request.body.decode('utf-8').split('&'))
 
-		args_list = request.data['text'].split()
+        self.user_name_  = request.data['user_name']
+        self.trigger_id_ = request.data['trigger_id']
 
-		if len(args_list) < 1:
-			self.Error('a0')
-		elif args_list[0].isdecimal() != True:
-			self.Error('a0')
-		else: 
-			self.job_id = int(args_list[0])
+        args_list = request.data['text'].split()
 
-			if re.match('/jobbot/run/', request.path_info):
-				qstat_tot, err = self.GetQ()
-				if len(err): self.Error(err)
-				else:
-					threading.Thread(target=self.RunJobBot, args=[]).start()
-					qstat = qstat_tot[qstat_tot['job_id'] == self.job_id].iloc[0, :]
-					self.PrintMsg(':bell:\t%d\t%s\t(현재 %d분 경과)\n알림이 설정되었습니다.' % (self.job_id, *self.GetQInfo(qstat)))
-					self.PrintWatcher(qstat)
-			elif re.match('/jobbot/exit/', request.path_info):
-				"""
-				res = 1
-				if res > 0: self.PrintMsg('알림 설정이 취소되지 않았습니다.\n')
-				else: self.PrintMsg('알림 설정이 정상적으로 취소되었습니다.\n')
-				"""
-			else:
-				print('%s is wrong path' % request.path_info)
-				sys.exit(1)
+        if len(args_list) < 1:
+            self.Error('a0')
+        elif args_list[0].isdecimal() != True:
+            self.Error('a0')
+        else: 
+            self.job_id = int(args_list[0])
+            if re.match('/jobbot/run/', request.path_info):
+                threading.Thread(target=self.RunJobBot, args=[]).start()
+            else:
+                print('%s is wrong path' % request.path_info)
+                sys.exit(1)
 
-		return Response(status=200)
+        return Response(status=200)
 
-	def Error(self, err_type):
-		err_dict = {
-			'a0': '잡 ID를 입력하세요. 사용법: /jb [job_id]',
-			'j0': '현재 제출된 잡이 없습니다.',
-			'j1': '%d 은(는) 존재하지 않는 잡 ID 입니다.' % self.job_id,
-			'j2': '잡 목록 구성 중 오류가 발생하였습니다.',
-		}
-		self.PrintMsg('%s\n' % err_dict[err_type])
-		print('Error %s\n' % err_type)
+    def Error(self, err):
+        err_dict = {
+                'a0': '잡 ID를 입력하세요. 사용법: /jb [job_id]',
+                'j0': '%d 은(는) 존재하지 않는 잡 ID 입니다.' % self.job_id,
+                'j1': '%d 은(는) 현재 대기 중입니다.' % self.job_id,
+                }
+        self.PrintMsg(':meow_party:\t%s\n' % err_dict[err])
+        print(datetime.datetime.now(), self.user_name_, self.trigger_id_, 'Error %s\n' % err)
